@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta
+    name="description"
+    content="Интерактивная симуляция графа с притяжением, векторами и траекториями вершин."
+  >
+  <meta property="og:title" content="Гравитационный граф">
+  <meta
+    property="og:description"
+    content="Исследуйте связи, притяжение, скорость и ускорение вершин."
+  >
+  <meta property="og:image" content="/og.png">
+  <meta property="og:type" content="website">
+  <meta name="twitter:card" content="summary_large_image">
+  <title>Гравитационный граф</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="app">
+    <canvas
+      id="myCanvas"
+      aria-label="Интерактивная область гравитационного графа"
+    ></canvas>
+
+    <aside class="control-panel" aria-label="Управление симуляцией">
+      <header class="panel-header">
+        <div>
+          <p class="eyebrow">Симуляция</p>
+          <h1>Гравитационный граф</h1>
+        </div>
+        <button
+          id="resetCameraButton"
+          class="icon-button"
+          type="button"
+          title="Сбросить камеру"
+          aria-label="Сбросить камеру"
+        >⌖</button>
+      </header>
+
+      <section class="control-section" aria-labelledby="parametersTitle">
+        <div class="section-heading">
+          <h2 id="parametersTitle">Параметры</h2>
+          <span id="editingHint" class="section-note">для новой вершины</span>
+        </div>
+
+        <label class="range-control" for="gravitySlider">
+          <span class="range-heading">
+            <span>Сила притяжения</span>
+            <output id="gravityValue" for="gravitySlider">50</output>
+          </span>
+          <input
+            id="gravitySlider"
+            type="range"
+            min="0"
+            max="200"
+            step="1"
+            value="50"
+          >
+        </label>
+
+        <label class="range-control" for="massSlider">
+          <span class="range-heading">
+            <span>Масса вершины</span>
+            <output id="massValue" for="massSlider">20</output>
+          </span>
+          <input
+            id="massSlider"
+            type="range"
+            min="1"
+            max="300"
+            step="1"
+            value="20"
+          >
+        </label>
+
+        <label class="range-control" for="speedSlider">
+          <span class="range-heading">
+            <span>Начальная скорость</span>
+            <output id="speedValue" for="speedSlider">3.0</output>
+          </span>
+          <input
+            id="speedSlider"
+            type="range"
+            min="0"
+            max="15"
+            step="0.1"
+            value="3"
+          >
+        </label>
+      </section>
+
+      <section class="control-section" aria-labelledby="displayTitle">
+        <div class="section-heading">
+          <h2 id="displayTitle">Отображение</h2>
+        </div>
+
+        <div id="modeSwitcher" class="mode-switcher" role="group" aria-label="Режим отображения">
+          <button class="mode-button is-active" type="button" data-mode="connections" aria-pressed="true">
+            Связи
+          </button>
+          <button class="mode-button" type="button" data-mode="attraction" aria-pressed="false">
+            Притяжение
+          </button>
+          <button class="mode-button" type="button" data-mode="velocity" aria-pressed="false">
+            Скорость
+          </button>
+          <button class="mode-button" type="button" data-mode="acceleration" aria-pressed="false">
+            Ускорение
+          </button>
+        </div>
+
+        <label class="toggle-control" for="trailsToggle">
+          <span>
+            <strong>Траектории</strong>
+            <small>След движения каждой вершины</small>
+          </span>
+          <input id="trailsToggle" type="checkbox" checked>
+          <span class="toggle" aria-hidden="true"></span>
+        </label>
+
+        <button id="clearTrailsButton" class="secondary-button" type="button">
+          Очистить траектории
+        </button>
+      </section>
+
+      <section class="selection-card" aria-labelledby="selectionTitle">
+        <div class="selection-title-row">
+          <div>
+            <p class="eyebrow">Выбрано</p>
+            <h2 id="selectionTitle">Нет вершины</h2>
+          </div>
+          <span id="selectionMarker" class="selection-marker" aria-hidden="true"></span>
+        </div>
+
+        <div id="selectionEmpty" class="empty-state">
+          Нажмите на вершину, чтобы увидеть её параметры и зависимости.
+        </div>
+
+        <div id="selectionDetails" class="selection-details" hidden>
+          <dl class="stats-grid">
+            <div>
+              <dt>Масса</dt>
+              <dd id="selectedMass">—</dd>
+            </div>
+            <div>
+              <dt>Скорость</dt>
+              <dd id="selectedSpeed">—</dd>
+            </div>
+            <div>
+              <dt>Ускорение</dt>
+              <dd id="selectedAcceleration">—</dd>
+            </div>
+            <div>
+              <dt>Координаты</dt>
+              <dd id="selectedPosition">—</dd>
+            </div>
+          </dl>
+
+          <div class="influence-heading">
+            <h3>Влияние вершин</h3>
+            <span>по силе</span>
+          </div>
+          <ol id="influenceList" class="influence-list"></ol>
+
+          <button id="deletePointButton" class="danger-button" type="button">
+            Удалить вершину
+            <kbd>Delete</kbd>
+          </button>
+        </div>
+      </section>
+    </aside>
+
+    <div class="canvas-status" aria-live="polite">
+      <span id="zoomIndicator">100%</span>
+      <span class="status-divider"></span>
+      <span id="modeIndicator">Режим: связи</span>
+    </div>
+
+    <div class="interaction-help">
+      <span><kbd>2×</kbd> создать</span>
+      <span><kbd>↖</kbd> перетащить вершину</span>
+      <span><kbd>Shift</kbd> + перетаскивание — камера</span>
+      <span><kbd>Колесо</kbd> масштаб</span>
+    </div>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>
