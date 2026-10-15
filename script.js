@@ -1,13 +1,34 @@
 const canvas = document.getElementById("myCanvas");
 const ctx = canvas.getContext("2d");
+const minimapCanvas = document.getElementById("minimapCanvas");
+const minimapCtx = minimapCanvas.getContext("2d");
 
 const ui = {
+  pauseButton: document.getElementById("pauseButton"),
+  playbackButton: document.getElementById("playbackButton"),
+  stepButton: document.getElementById("stepButton"),
+  simulationStatus: document.getElementById("simulationStatus"),
+  timeScaleSlider: document.getElementById("timeScaleSlider"),
+  timeScaleValue: document.getElementById("timeScaleValue"),
   gravitySlider: document.getElementById("gravitySlider"),
   gravityValue: document.getElementById("gravityValue"),
   massSlider: document.getElementById("massSlider"),
   massValue: document.getElementById("massValue"),
   speedSlider: document.getElementById("speedSlider"),
   speedValue: document.getElementById("speedValue"),
+  mapWidthSlider: document.getElementById("mapWidthSlider"),
+  mapWidthValue: document.getElementById("mapWidthValue"),
+  mapHeightSlider: document.getElementById("mapHeightSlider"),
+  mapHeightValue: document.getElementById("mapHeightValue"),
+  mapSizeValue: document.getElementById("mapSizeValue"),
+  minimapSize: document.getElementById("minimapSize"),
+  fitGraphButton: document.getElementById("fitGraphButton"),
+  centerSelectedButton: document.getElementById(
+    "centerSelectedButton",
+  ),
+  followSelectedToggle: document.getElementById(
+    "followSelectedToggle",
+  ),
   editingHint: document.getElementById("editingHint"),
   modeButtons: [...document.querySelectorAll(".mode-button")],
   trailsToggle: document.getElementById("trailsToggle"),
@@ -25,6 +46,7 @@ const ui = {
   deletePointButton: document.getElementById("deletePointButton"),
   zoomIndicator: document.getElementById("zoomIndicator"),
   modeIndicator: document.getElementById("modeIndicator"),
+  timeIndicator: document.getElementById("timeIndicator"),
 };
 
 const BASE_RADIUS = 4;
@@ -33,8 +55,8 @@ const COLLISION_RESTITUTION = 1;
 const GRAVITY_SOFTENING = 12;
 const PHYSICS_SUBSTEPS = 2;
 const MAX_TRAIL_POINTS = 180;
-const MIN_ZOOM = 0.28;
-const MAX_ZOOM = 3.5;
+const MIN_ZOOM = 0.02;
+const MAX_ZOOM = 6;
 const DOUBLE_CLICK_DELAY = 360;
 const DRAG_THRESHOLD = 4;
 
@@ -52,6 +74,9 @@ const state = {
   gravity: Number(ui.gravitySlider.value),
   defaultMass: Number(ui.massSlider.value),
   defaultSpeed: Number(ui.speedSlider.value),
+  timeScale: Number(ui.timeScaleSlider.value),
+  paused: false,
+  followSelected: false,
   mode: "connections",
   showTrails: ui.trailsToggle.checked,
   dpr: 1,
@@ -60,8 +85,8 @@ const state = {
     height: window.innerHeight,
   },
   world: {
-    width: Math.max(window.innerWidth, 1100),
-    height: Math.max(window.innerHeight, 750),
+    width: Number(ui.mapWidthSlider.value),
+    height: Number(ui.mapHeightSlider.value),
   },
   camera: {
     x: 0,
@@ -82,6 +107,10 @@ const state = {
   lastFrameTime: performance.now(),
   lastTrailTime: performance.now(),
   lastUiTime: 0,
+  minimapInteraction: {
+    active: false,
+    pointerId: null,
+  },
 };
 
 function clamp(value, minimum, maximum) {
@@ -100,23 +129,144 @@ function resizeCanvas() {
   canvas.width = Math.round(state.viewport.width * state.dpr);
   canvas.height = Math.round(state.viewport.height * state.dpr);
 
-  state.world.width = Math.max(state.world.width, state.viewport.width);
-  state.world.height = Math.max(state.world.height, state.viewport.height);
+  const minimapRect = minimapCanvas.getBoundingClientRect();
+  minimapCanvas.width = Math.max(
+    1,
+    Math.round(minimapRect.width * state.dpr),
+  );
+  minimapCanvas.height = Math.max(
+    1,
+    Math.round(minimapRect.height * state.dpr),
+  );
 }
 
-function resetCamera() {
-  const fitZoom = Math.min(
-    1,
-    state.viewport.width / state.world.width,
-    state.viewport.height / state.world.height,
+function setFollowSelected(enabled) {
+  state.followSelected = Boolean(enabled && state.selectedPoint);
+  ui.followSelectedToggle.checked = state.followSelected;
+}
+
+function getSafeViewport() {
+  const panel = document.querySelector(".control-panel");
+  const panelRect = panel?.getBoundingClientRect();
+  const hasSidePanel =
+    state.viewport.width > 760 &&
+    panelRect &&
+    panelRect.width > 0;
+  const left = hasSidePanel
+    ? Math.min(panelRect.right + 18, state.viewport.width * 0.45)
+    : 0;
+
+  return {
+    left,
+    top: 0,
+    right: state.viewport.width,
+    bottom: state.viewport.height,
+    width: state.viewport.width - left,
+    height: state.viewport.height,
+    centerX: left + (state.viewport.width - left) / 2,
+    centerY: state.viewport.height / 2,
+  };
+}
+
+function centerCameraOnWorld(point, disableFollow = false) {
+  if (disableFollow) setFollowSelected(false);
+  const safeViewport = getSafeViewport();
+
+  state.camera.x =
+    safeViewport.centerX - point.x * state.camera.zoom;
+  state.camera.y =
+    safeViewport.centerY - point.y * state.camera.zoom;
+  updateCameraUi();
+}
+
+function applyFollowCamera(deltaMilliseconds = 16.67) {
+  if (
+    !state.followSelected ||
+    !state.selectedPoint ||
+    state.interaction.type !== "idle" ||
+    state.minimapInteraction.active
+  ) {
+    return;
+  }
+
+  const safeViewport = getSafeViewport();
+  const targetX =
+    safeViewport.centerX -
+    state.selectedPoint.x * state.camera.zoom;
+  const targetY =
+    safeViewport.centerY -
+    state.selectedPoint.y * state.camera.zoom;
+  const smoothing =
+    1 - Math.exp(-Math.max(0, deltaMilliseconds) / 150);
+
+  state.camera.x += (targetX - state.camera.x) * smoothing;
+  state.camera.y += (targetY - state.camera.y) * smoothing;
+}
+
+function fitCameraToBounds(bounds, maximumZoom = MAX_ZOOM) {
+  const safeViewport = getSafeViewport();
+  const padding = 70;
+  const width = Math.max(1, bounds.maxX - bounds.minX);
+  const height = Math.max(1, bounds.maxY - bounds.minY);
+  const availableWidth = Math.max(
+    100,
+    safeViewport.width - padding * 2,
   );
+  const availableHeight = Math.max(
+    100,
+    safeViewport.height - padding * 2,
+  );
+  const fitZoom = clamp(
+    Math.min(
+      availableWidth / width,
+      availableHeight / height,
+    ),
+    MIN_ZOOM,
+    maximumZoom,
+  );
+  const centerX = (bounds.minX + bounds.maxX) / 2;
+  const centerY = (bounds.minY + bounds.maxY) / 2;
 
   state.camera.zoom = fitZoom;
-  state.camera.x =
-    (state.viewport.width - state.world.width * fitZoom) / 2;
-  state.camera.y =
-    (state.viewport.height - state.world.height * fitZoom) / 2;
+  state.camera.x = safeViewport.centerX - centerX * fitZoom;
+  state.camera.y = safeViewport.centerY - centerY * fitZoom;
   updateCameraUi();
+}
+
+function resetCamera(disableFollow = true) {
+  if (disableFollow) setFollowSelected(false);
+  fitCameraToBounds({
+    minX: 0,
+    minY: 0,
+    maxX: state.world.width,
+    maxY: state.world.height,
+  }, 1);
+}
+
+function fitGraph() {
+  if (state.points.length === 0) {
+    resetCamera();
+    return;
+  }
+
+  setFollowSelected(false);
+  const margin = 100;
+  const bounds = state.points.reduce(
+    (result, point) => ({
+      minX: Math.min(result.minX, point.x - point.radius - margin),
+      minY: Math.min(result.minY, point.y - point.radius - margin),
+      maxX: Math.max(result.maxX, point.x + point.radius + margin),
+      maxY: Math.max(result.maxY, point.y + point.radius + margin),
+    }),
+    {
+      minX: Infinity,
+      minY: Infinity,
+      maxX: -Infinity,
+      maxY: -Infinity,
+    },
+  );
+
+  fitCameraToBounds(bounds, 1.8);
 }
 
 function worldToScreen(point) {
@@ -152,6 +302,57 @@ function clampPointToWorld(point) {
     point.radius,
     state.world.height - point.radius,
   );
+}
+
+function setWorldSize(width, height) {
+  const safeViewport = getSafeViewport();
+  const previousCenter = screenToWorld({
+    x: safeViewport.centerX,
+    y: safeViewport.centerY,
+  });
+  const nextWidth = clamp(
+    Number(width),
+    Number(ui.mapWidthSlider.min),
+    Number(ui.mapWidthSlider.max),
+  );
+  const nextHeight = clamp(
+    Number(height),
+    Number(ui.mapHeightSlider.min),
+    Number(ui.mapHeightSlider.max),
+  );
+
+  state.world.width = nextWidth;
+  state.world.height = nextHeight;
+
+  for (const point of state.points) {
+    clampPointToWorld(point);
+    point.trail = [{ x: point.x, y: point.y }];
+  }
+
+  ui.mapWidthSlider.value = String(nextWidth);
+  ui.mapHeightSlider.value = String(nextHeight);
+  updateRangeControl(
+    ui.mapWidthSlider,
+    ui.mapWidthValue,
+    nextWidth,
+    0,
+  );
+  updateRangeControl(
+    ui.mapHeightSlider,
+    ui.mapHeightValue,
+    nextHeight,
+    0,
+  );
+
+  const sizeLabel = `${nextWidth} × ${nextHeight}`;
+  ui.mapSizeValue.value = sizeLabel;
+  ui.mapSizeValue.textContent = sizeLabel;
+  ui.minimapSize.textContent = sizeLabel;
+
+  centerCameraOnWorld({
+    x: clamp(previousCenter.x, 0, nextWidth),
+    y: clamp(previousCenter.y, 0, nextHeight),
+  });
 }
 
 function findAvailablePosition(x, y, radius) {
@@ -247,6 +448,12 @@ function seedPoints() {
 function setSelectedPoint(point, syncControls = true) {
   state.selectedPoint = point;
   if (point) state.lastBlankTap = null;
+  ui.centerSelectedButton.disabled = !point;
+  ui.followSelectedToggle.disabled = !point;
+
+  if (!point) {
+    setFollowSelected(false);
+  }
 
   if (point && syncControls) {
     const speed = Math.hypot(point.xVelocity, point.yVelocity);
@@ -414,21 +621,44 @@ function screenPixels(value) {
   return value / state.camera.zoom;
 }
 
+function getGridSpacing() {
+  const targetWorldSpacing = 82 / state.camera.zoom;
+  const spacings = [
+    25, 50, 100, 200, 500, 1000, 2000, 5000,
+  ];
+
+  return spacings.find(
+    (spacing) => spacing >= targetWorldSpacing,
+  ) ?? 10000;
+}
+
 function drawGrid() {
   const topLeft = screenToWorld({ x: 0, y: 0 });
   const bottomRight = screenToWorld({
     x: state.viewport.width,
     y: state.viewport.height,
   });
-  const gridSize = 70;
-  const startX = Math.floor(topLeft.x / gridSize) * gridSize;
-  const endX = Math.ceil(bottomRight.x / gridSize) * gridSize;
-  const startY = Math.floor(topLeft.y / gridSize) * gridSize;
-  const endY = Math.ceil(bottomRight.y / gridSize) * gridSize;
+  const gridSize = getGridSpacing();
+  const startX = Math.max(
+    0,
+    Math.floor(topLeft.x / gridSize) * gridSize,
+  );
+  const endX = Math.min(
+    state.world.width,
+    Math.ceil(bottomRight.x / gridSize) * gridSize,
+  );
+  const startY = Math.max(
+    0,
+    Math.floor(topLeft.y / gridSize) * gridSize,
+  );
+  const endY = Math.min(
+    state.world.height,
+    Math.ceil(bottomRight.y / gridSize) * gridSize,
+  );
 
   ctx.save();
   ctx.lineWidth = screenPixels(1);
-  ctx.strokeStyle = "rgba(28, 62, 49, 0.055)";
+  ctx.strokeStyle = "rgba(28, 62, 49, 0.07)";
   ctx.beginPath();
 
   for (let x = startX; x <= endX; x += gridSize) {
@@ -442,6 +672,40 @@ function drawGrid() {
   }
 
   ctx.stroke();
+
+  const labelY = clamp(
+    topLeft.y + screenPixels(17),
+    screenPixels(17),
+    state.world.height - screenPixels(17),
+  );
+  const labelX = clamp(
+    topLeft.x + screenPixels(26),
+    screenPixels(26),
+    state.world.width - screenPixels(26),
+  );
+
+  ctx.fillStyle = "rgba(50, 71, 63, 0.56)";
+  ctx.font =
+    `650 ${screenPixels(9)}px Inter, Arial, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  for (let x = startX; x <= endX; x += gridSize) {
+    ctx.fillText(
+      x.toLocaleString("ru-RU"),
+      x,
+      labelY,
+    );
+  }
+
+  ctx.textAlign = "left";
+  for (let y = startY; y <= endY; y += gridSize) {
+    ctx.fillText(
+      y.toLocaleString("ru-RU"),
+      labelX,
+      y,
+    );
+  }
 
   ctx.lineWidth = screenPixels(1.5);
   ctx.strokeStyle = "rgba(28, 62, 49, 0.13)";
@@ -693,6 +957,10 @@ function drawPoints() {
   for (const point of orderedPoints) {
     const isSelected = point === selectedPoint;
     const isHeavy = point.mass >= 80;
+    const displayRadius = Math.max(
+      point.radius,
+      screenPixels(3.5),
+    );
 
     ctx.save();
 
@@ -701,7 +969,7 @@ function drawPoints() {
       ctx.arc(
         point.x,
         point.y,
-        point.radius + screenPixels(6),
+        displayRadius + screenPixels(6),
         0,
         Math.PI * 2,
       );
@@ -714,7 +982,7 @@ function drawPoints() {
     }
 
     ctx.beginPath();
-    ctx.arc(point.x, point.y, point.radius, 0, Math.PI * 2);
+    ctx.arc(point.x, point.y, displayRadius, 0, Math.PI * 2);
     ctx.fillStyle = isSelected
       ? "#e8653c"
       : isHeavy
@@ -735,9 +1003,176 @@ function drawPoints() {
     ctx.fillText(
       `#${point.id}`,
       point.x,
-      point.y - point.radius - screenPixels(6),
+      point.y - displayRadius - screenPixels(6),
     );
     ctx.restore();
+  }
+}
+
+function getMinimapMetrics() {
+  const width = minimapCanvas.width / state.dpr;
+  const height = minimapCanvas.height / state.dpr;
+  const padding = Math.min(9, width * 0.06, height * 0.06);
+  const scale = Math.min(
+    Math.max(1, width - padding * 2) / state.world.width,
+    Math.max(1, height - padding * 2) / state.world.height,
+  );
+
+  return {
+    width,
+    height,
+    padding,
+    scale,
+    offsetX: (width - state.world.width * scale) / 2,
+    offsetY: (height - state.world.height * scale) / 2,
+  };
+}
+
+function minimapWorldToScreen(point, metrics = getMinimapMetrics()) {
+  return {
+    x: metrics.offsetX + point.x * metrics.scale,
+    y: metrics.offsetY + point.y * metrics.scale,
+  };
+}
+
+function minimapEventToWorld(event) {
+  const rect = minimapCanvas.getBoundingClientRect();
+  const metrics = getMinimapMetrics();
+  const localX = event.clientX - rect.left;
+  const localY = event.clientY - rect.top;
+
+  return {
+    x: clamp(
+      (localX - metrics.offsetX) / metrics.scale,
+      0,
+      state.world.width,
+    ),
+    y: clamp(
+      (localY - metrics.offsetY) / metrics.scale,
+      0,
+      state.world.height,
+    ),
+  };
+}
+
+function getCameraWorldBounds() {
+  const firstCorner = screenToWorld({ x: 0, y: 0 });
+  const secondCorner = screenToWorld({
+    x: state.viewport.width,
+    y: state.viewport.height,
+  });
+
+  return {
+    minX: Math.min(firstCorner.x, secondCorner.x),
+    minY: Math.min(firstCorner.y, secondCorner.y),
+    maxX: Math.max(firstCorner.x, secondCorner.x),
+    maxY: Math.max(firstCorner.y, secondCorner.y),
+  };
+}
+
+function drawMinimap() {
+  const metrics = getMinimapMetrics();
+
+  minimapCtx.setTransform(
+    state.dpr,
+    0,
+    0,
+    state.dpr,
+    0,
+    0,
+  );
+  minimapCtx.clearRect(0, 0, metrics.width, metrics.height);
+  minimapCtx.fillStyle = "#f5f7f1";
+  minimapCtx.fillRect(0, 0, metrics.width, metrics.height);
+
+  const worldOrigin = minimapWorldToScreen({ x: 0, y: 0 }, metrics);
+  const worldEnd = minimapWorldToScreen(
+    { x: state.world.width, y: state.world.height },
+    metrics,
+  );
+
+  minimapCtx.fillStyle = "rgba(255, 255, 255, 0.66)";
+  minimapCtx.fillRect(
+    worldOrigin.x,
+    worldOrigin.y,
+    worldEnd.x - worldOrigin.x,
+    worldEnd.y - worldOrigin.y,
+  );
+  minimapCtx.lineWidth = 1;
+  minimapCtx.strokeStyle = "rgba(31, 64, 51, 0.2)";
+  minimapCtx.strokeRect(
+    worldOrigin.x,
+    worldOrigin.y,
+    worldEnd.x - worldOrigin.x,
+    worldEnd.y - worldOrigin.y,
+  );
+
+  minimapCtx.beginPath();
+  minimapCtx.lineWidth = 0.75;
+  minimapCtx.strokeStyle = "rgba(23, 74, 55, 0.16)";
+  for (const [first, second] of createConnections(2)) {
+    const from = minimapWorldToScreen(first, metrics);
+    const to = minimapWorldToScreen(second, metrics);
+    minimapCtx.moveTo(from.x, from.y);
+    minimapCtx.lineTo(to.x, to.y);
+  }
+  minimapCtx.stroke();
+
+  for (const point of state.points) {
+    const position = minimapWorldToScreen(point, metrics);
+    const pointRadius = clamp(
+      point.radius * metrics.scale,
+      point === state.selectedPoint ? 3 : 2,
+      point === state.selectedPoint ? 6 : 4.5,
+    );
+
+    minimapCtx.beginPath();
+    minimapCtx.arc(
+      position.x,
+      position.y,
+      pointRadius,
+      0,
+      Math.PI * 2,
+    );
+    minimapCtx.fillStyle =
+      point === state.selectedPoint ? "#e8653c" : "#176b52";
+    minimapCtx.fill();
+  }
+
+  const cameraBounds = getCameraWorldBounds();
+  const clippedBounds = {
+    minX: clamp(cameraBounds.minX, 0, state.world.width),
+    minY: clamp(cameraBounds.minY, 0, state.world.height),
+    maxX: clamp(cameraBounds.maxX, 0, state.world.width),
+    maxY: clamp(cameraBounds.maxY, 0, state.world.height),
+  };
+  const cameraStart = minimapWorldToScreen(
+    { x: clippedBounds.minX, y: clippedBounds.minY },
+    metrics,
+  );
+  const cameraEnd = minimapWorldToScreen(
+    { x: clippedBounds.maxX, y: clippedBounds.maxY },
+    metrics,
+  );
+  const cameraWidth = Math.max(0, cameraEnd.x - cameraStart.x);
+  const cameraHeight = Math.max(0, cameraEnd.y - cameraStart.y);
+
+  if (cameraWidth > 0 && cameraHeight > 0) {
+    minimapCtx.fillStyle = "rgba(232, 101, 60, 0.1)";
+    minimapCtx.fillRect(
+      cameraStart.x,
+      cameraStart.y,
+      cameraWidth,
+      cameraHeight,
+    );
+    minimapCtx.lineWidth = 1.5;
+    minimapCtx.strokeStyle = "#e8653c";
+    minimapCtx.strokeRect(
+      cameraStart.x,
+      cameraStart.y,
+      cameraWidth,
+      cameraHeight,
+    );
   }
 }
 
@@ -762,6 +1197,7 @@ function render() {
   }
 
   drawPoints();
+  drawMinimap();
 }
 
 function keepInsideWorld(point) {
@@ -871,9 +1307,14 @@ function getDraggedPoint() {
 
 function stepPhysics(frameScale = 1) {
   const draggedPoint = getDraggedPoint();
-  const timeStep = frameScale / PHYSICS_SUBSTEPS;
+  const substeps = clamp(
+    Math.ceil(Math.abs(frameScale) / 0.5),
+    PHYSICS_SUBSTEPS,
+    24,
+  );
+  const timeStep = frameScale / substeps;
 
-  for (let step = 0; step < PHYSICS_SUBSTEPS; step++) {
+  for (let step = 0; step < substeps; step++) {
     applyGravity();
 
     for (const point of state.points) {
@@ -904,8 +1345,8 @@ function stepPhysics(frameScale = 1) {
   }
 }
 
-function sampleTrails(timestamp) {
-  if (timestamp - state.lastTrailTime < 50) return;
+function sampleTrails(timestamp, force = false) {
+  if (!force && timestamp - state.lastTrailTime < 50) return;
   state.lastTrailTime = timestamp;
 
   for (const point of state.points) {
@@ -946,6 +1387,48 @@ function updateRangeControl(input, output, value, decimals = 0) {
 function updateCameraUi() {
   ui.zoomIndicator.textContent =
     `${Math.round(state.camera.zoom * 100)}%`;
+}
+
+function updatePlaybackUi() {
+  const isPaused = state.paused;
+  ui.pauseButton.textContent = isPaused ? "▶" : "Ⅱ";
+  ui.pauseButton.title = isPaused
+    ? "Продолжить симуляцию"
+    : "Поставить симуляцию на паузу";
+  ui.pauseButton.setAttribute(
+    "aria-label",
+    ui.pauseButton.title,
+  );
+  ui.pauseButton.setAttribute("aria-pressed", String(isPaused));
+  ui.playbackButton.textContent = isPaused
+    ? "Продолжить"
+    : "Пауза";
+  ui.stepButton.disabled = !isPaused;
+  ui.simulationStatus.textContent = isPaused ? "пауза" : "идёт";
+  ui.simulationStatus.classList.toggle("is-paused", isPaused);
+  ui.timeIndicator.textContent = isPaused
+    ? "Пауза"
+    : `${state.timeScale.toFixed(1)}×`;
+}
+
+function setPaused(paused) {
+  state.paused = Boolean(paused);
+  state.lastFrameTime = performance.now();
+  updatePlaybackUi();
+}
+
+function togglePaused() {
+  setPaused(!state.paused);
+}
+
+function singleStep() {
+  if (!state.paused) return;
+
+  stepPhysics(1);
+  sampleTrails(performance.now(), true);
+  applyFollowCamera(16.67);
+  render();
+  updateSelectionPanel(true);
 }
 
 function updateModeUi() {
@@ -1033,6 +1516,28 @@ function setMode(mode) {
   if (!Object.prototype.hasOwnProperty.call(MODE_NAMES, mode)) return;
   state.mode = mode;
   updateModeUi();
+}
+
+function handleTimeScaleInput() {
+  state.timeScale = Number(ui.timeScaleSlider.value);
+  updateRangeControl(
+    ui.timeScaleSlider,
+    ui.timeScaleValue,
+    state.timeScale,
+    1,
+  );
+
+  const label = `${state.timeScale.toFixed(1)}×`;
+  ui.timeScaleValue.value = label;
+  ui.timeScaleValue.textContent = label;
+  updatePlaybackUi();
+}
+
+function handleMapSizeInput() {
+  setWorldSize(
+    Number(ui.mapWidthSlider.value),
+    Number(ui.mapHeightSlider.value),
+  );
 }
 
 function handleGravityInput() {
@@ -1131,6 +1636,7 @@ function beginInteraction(event) {
   state.interaction.moved = false;
 
   if (wantsPan) {
+    setFollowSelected(false);
     state.interaction.type = "pan-press";
     state.interaction.cameraStart = {
       x: state.camera.x,
@@ -1303,6 +1809,7 @@ function endInteraction(event) {
 function handleWheel(event) {
   if (state.interaction.type !== "idle") return;
 
+  setFollowSelected(false);
   const screenPoint = getScreenPoint(event);
   const worldPoint = screenToWorld(screenPoint);
   const delta =
@@ -1324,16 +1831,82 @@ function handleWheel(event) {
   event.preventDefault();
 }
 
+function moveCameraFromMinimap(event) {
+  const worldPoint = minimapEventToWorld(event);
+  centerCameraOnWorld(worldPoint, true);
+}
+
+function beginMinimapInteraction(event) {
+  if (event.button !== 0 || state.minimapInteraction.active) return;
+
+  state.minimapInteraction.active = true;
+  state.minimapInteraction.pointerId = event.pointerId;
+  minimapCanvas.classList.add("is-dragging");
+  minimapCanvas.setPointerCapture?.(event.pointerId);
+  moveCameraFromMinimap(event);
+  event.preventDefault();
+}
+
+function moveMinimapInteraction(event) {
+  if (
+    !state.minimapInteraction.active ||
+    event.pointerId !== state.minimapInteraction.pointerId
+  ) {
+    return;
+  }
+
+  moveCameraFromMinimap(event);
+  event.preventDefault();
+}
+
+function endMinimapInteraction(event) {
+  if (
+    !state.minimapInteraction.active ||
+    (
+      event.pointerId !== undefined &&
+      event.pointerId !== state.minimapInteraction.pointerId
+    )
+  ) {
+    return;
+  }
+
+  if (
+    state.minimapInteraction.pointerId !== null &&
+    minimapCanvas.hasPointerCapture?.(
+      state.minimapInteraction.pointerId,
+    )
+  ) {
+    minimapCanvas.releasePointerCapture(
+      state.minimapInteraction.pointerId,
+    );
+  }
+
+  state.minimapInteraction.active = false;
+  state.minimapInteraction.pointerId = null;
+  minimapCanvas.classList.remove("is-dragging");
+  event.preventDefault?.();
+}
+
 function isEditableTarget(target) {
   return (
     target instanceof HTMLInputElement ||
     target instanceof HTMLTextAreaElement ||
     target instanceof HTMLSelectElement ||
+    target instanceof HTMLButtonElement ||
     target?.isContentEditable
   );
 }
 
 function handleKeyDown(event) {
+  if (
+    event.code === "Space" &&
+    !isEditableTarget(event.target)
+  ) {
+    event.preventDefault();
+    togglePaused();
+    return;
+  }
+
   if (
     (event.key === "Delete" || event.key === "Backspace") &&
     !isEditableTarget(event.target) &&
@@ -1352,8 +1925,15 @@ function animate(timestamp) {
   const frameScale = delta / (1000 / 60);
 
   state.lastFrameTime = timestamp;
-  stepPhysics(frameScale);
-  sampleTrails(timestamp);
+
+  if (state.paused) {
+    applyGravity();
+  } else {
+    stepPhysics(frameScale * state.timeScale);
+    sampleTrails(timestamp);
+  }
+
+  applyFollowCamera(delta);
   render();
 
   if (timestamp - state.lastUiTime >= 120) {
@@ -1365,9 +1945,15 @@ function animate(timestamp) {
   requestAnimationFrame(animate);
 }
 
+ui.pauseButton.addEventListener("click", togglePaused);
+ui.playbackButton.addEventListener("click", togglePaused);
+ui.stepButton.addEventListener("click", singleStep);
+ui.timeScaleSlider.addEventListener("input", handleTimeScaleInput);
 ui.gravitySlider.addEventListener("input", handleGravityInput);
 ui.massSlider.addEventListener("input", handleMassInput);
 ui.speedSlider.addEventListener("input", handleSpeedInput);
+ui.mapWidthSlider.addEventListener("input", handleMapSizeInput);
+ui.mapHeightSlider.addEventListener("input", handleMapSizeInput);
 
 for (const button of ui.modeButtons) {
   button.addEventListener("click", () => {
@@ -1380,6 +1966,18 @@ ui.trailsToggle.addEventListener("change", () => {
 });
 ui.clearTrailsButton.addEventListener("click", clearTrails);
 ui.resetCameraButton.addEventListener("click", resetCamera);
+ui.fitGraphButton.addEventListener("click", fitGraph);
+ui.centerSelectedButton.addEventListener("click", () => {
+  if (state.selectedPoint) {
+    centerCameraOnWorld(state.selectedPoint);
+  }
+});
+ui.followSelectedToggle.addEventListener("change", () => {
+  setFollowSelected(ui.followSelectedToggle.checked);
+  if (state.followSelected && state.selectedPoint) {
+    centerCameraOnWorld(state.selectedPoint);
+  }
+});
 ui.deletePointButton.addEventListener("click", deleteSelectedPoint);
 
 canvas.addEventListener("pointerdown", beginInteraction);
@@ -1393,18 +1991,46 @@ canvas.addEventListener("wheel", handleWheel, { passive: false });
 canvas.addEventListener("contextmenu", (event) => event.preventDefault());
 canvas.addEventListener("dblclick", (event) => event.preventDefault());
 
+minimapCanvas.addEventListener(
+  "pointerdown",
+  beginMinimapInteraction,
+);
+minimapCanvas.addEventListener(
+  "pointermove",
+  moveMinimapInteraction,
+);
+minimapCanvas.addEventListener(
+  "pointerup",
+  endMinimapInteraction,
+);
+minimapCanvas.addEventListener(
+  "pointercancel",
+  endMinimapInteraction,
+);
+minimapCanvas.addEventListener("lostpointercapture", (event) => {
+  if (state.minimapInteraction.active) {
+    endMinimapInteraction(event);
+  }
+});
+
 window.addEventListener("keydown", handleKeyDown);
-window.addEventListener("blur", cancelInteraction);
+window.addEventListener("blur", () => {
+  cancelInteraction();
+  endMinimapInteraction({});
+});
 window.addEventListener("resize", resizeCanvas);
 
 resizeCanvas();
+handleMapSizeInput();
 resetCamera();
 seedPoints();
+handleTimeScaleInput();
 handleGravityInput();
 handleMassInput();
 handleSpeedInput();
 updateModeUi();
-updateSelectionPanel(true);
+updatePlaybackUi();
+setSelectedPoint(null, false);
 
 window.__graphApp = Object.freeze({
   getState() {
@@ -1414,10 +2040,15 @@ window.__graphApp = Object.freeze({
       gravity: state.gravity,
       defaultMass: state.defaultMass,
       defaultSpeed: state.defaultSpeed,
+      paused: state.paused,
+      timeScale: state.timeScale,
+      followSelected: state.followSelected,
       mode: state.mode,
       showTrails: state.showTrails,
       camera: { ...state.camera },
       world: { ...state.world },
+      viewport: { ...state.viewport },
+      gridSpacing: getGridSpacing(),
       points: state.points.map((point) => ({
         id: point.id,
         mass: point.mass,
@@ -1449,6 +2080,12 @@ window.__graphApp = Object.freeze({
     }));
   },
   getDependencyStyle,
+  getMinimapLayout() {
+    return {
+      metrics: getMinimapMetrics(),
+      cameraBounds: getCameraWorldBounds(),
+    };
+  },
   setMode,
   selectPoint(pointId) {
     const point = state.points.find(
@@ -1463,8 +2100,28 @@ window.__graphApp = Object.freeze({
   },
   deleteSelectedPoint,
   clearTrails,
+  setWorldSize,
+  fitGraph,
   resetCamera,
+  centerSelected() {
+    if (state.selectedPoint) {
+      centerCameraOnWorld(state.selectedPoint);
+    }
+  },
+  setFollowSelected: (enabled) => {
+    setFollowSelected(enabled);
+    if (state.followSelected && state.selectedPoint) {
+      centerCameraOnWorld(state.selectedPoint);
+    }
+  },
+  setPaused,
+  setTimeScale(value) {
+    ui.timeScaleSlider.value = String(clamp(value, 0.1, 3));
+    handleTimeScaleInput();
+  },
+  singleStep,
   stepPhysics,
+  render,
 });
 
 requestAnimationFrame(animate);

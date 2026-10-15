@@ -31,14 +31,55 @@
           <p class="eyebrow">Симуляция</p>
           <h1>Гравитационный граф</h1>
         </div>
-        <button
-          id="resetCameraButton"
-          class="icon-button"
-          type="button"
-          title="Сбросить камеру"
-          aria-label="Сбросить камеру"
-        >⌖</button>
+        <div class="header-actions">
+          <button
+            id="pauseButton"
+            class="icon-button"
+            type="button"
+            title="Поставить симуляцию на паузу"
+            aria-label="Поставить симуляцию на паузу"
+            aria-pressed="false"
+          >Ⅱ</button>
+          <button
+            id="resetCameraButton"
+            class="icon-button"
+            type="button"
+            title="Показать всю карту"
+            aria-label="Показать всю карту"
+          >⌖</button>
+        </div>
       </header>
+
+      <section class="control-section time-section" aria-labelledby="timeTitle">
+        <div class="section-heading">
+          <h2 id="timeTitle">Время</h2>
+          <span id="simulationStatus" class="live-status">идёт</span>
+        </div>
+
+        <div class="playback-controls" role="group" aria-label="Управление временем">
+          <button id="playbackButton" class="primary-button" type="button">
+            Пауза
+          </button>
+          <button id="stepButton" class="secondary-button compact-button" type="button" disabled>
+            Один шаг
+          </button>
+        </div>
+
+        <label class="range-control" for="timeScaleSlider">
+          <span class="range-heading">
+            <span>Скорость времени</span>
+            <output id="timeScaleValue" for="timeScaleSlider">1.0×</output>
+          </span>
+          <input
+            id="timeScaleSlider"
+            type="range"
+            min="0.1"
+            max="3"
+            step="0.1"
+            value="1"
+          >
+        </label>
+      </section>
 
       <section class="control-section" aria-labelledby="parametersTitle">
         <div class="section-heading">
@@ -89,6 +130,61 @@
             step="0.1"
             value="3"
           >
+        </label>
+      </section>
+
+      <section class="control-section" aria-labelledby="mapTitle">
+        <div class="section-heading">
+          <h2 id="mapTitle">Размер карты</h2>
+          <output id="mapSizeValue" class="section-note">2600 × 1600</output>
+        </div>
+
+        <label class="range-control" for="mapWidthSlider">
+          <span class="range-heading">
+            <span>Ширина</span>
+            <output id="mapWidthValue" for="mapWidthSlider">2600</output>
+          </span>
+          <input
+            id="mapWidthSlider"
+            type="range"
+            min="1000"
+            max="10000"
+            step="100"
+            value="2600"
+          >
+        </label>
+
+        <label class="range-control" for="mapHeightSlider">
+          <span class="range-heading">
+            <span>Высота</span>
+            <output id="mapHeightValue" for="mapHeightSlider">1600</output>
+          </span>
+          <input
+            id="mapHeightSlider"
+            type="range"
+            min="800"
+            max="7000"
+            step="100"
+            value="1600"
+          >
+        </label>
+
+        <div class="map-actions">
+          <button id="fitGraphButton" class="secondary-button compact-button" type="button">
+            Весь граф
+          </button>
+          <button id="centerSelectedButton" class="secondary-button compact-button" type="button" disabled>
+            К выбранной
+          </button>
+        </div>
+
+        <label class="toggle-control" for="followSelectedToggle">
+          <span>
+            <strong>Следить за вершиной</strong>
+            <small>Камера удерживает выбранную вершину в центре</small>
+          </span>
+          <input id="followSelectedToggle" type="checkbox" disabled>
+          <span class="toggle" aria-hidden="true"></span>
         </label>
       </section>
 
@@ -173,10 +269,26 @@
       </section>
     </aside>
 
+    <section class="minimap-panel" aria-label="Мини-карта">
+      <header class="minimap-header">
+        <strong>Мини-карта</strong>
+        <span id="minimapSize">2600 × 1600</span>
+      </header>
+      <canvas
+        id="minimapCanvas"
+        width="244"
+        height="154"
+        aria-label="Мини-карта мира. Нажмите, чтобы переместить камеру."
+      ></canvas>
+      <p>Нажмите или перетащите рамку обзора</p>
+    </section>
+
     <div class="canvas-status" aria-live="polite">
       <span id="zoomIndicator">100%</span>
       <span class="status-divider"></span>
       <span id="modeIndicator">Режим: связи</span>
+      <span class="status-divider"></span>
+      <span id="timeIndicator">1.0×</span>
     </div>
 
     <div class="interaction-help">
